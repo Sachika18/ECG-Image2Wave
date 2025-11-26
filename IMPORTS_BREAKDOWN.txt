@@ -1,0 +1,318 @@
+================================================================================
+IMPORTS BREAKDOWN - ECG DIGITIZER PROJECT
+================================================================================
+
+This document lists every import used in the project and explains its purpose.
+
+
+================================================================================
+FILE: app.py (Model & Inference)
+================================================================================
+
+1. import math
+   ├─ Purpose: Mathematical calculations
+   └─ Used in: UNet1DDecoder
+      - Calculates L0 = math.ceil(out_T / (2 ** up_steps))
+      - Determines initial decoder feature map size before upsampling
+
+
+2. import torch
+   ├─ Purpose: PyTorch deep learning framework
+   ├─ Used in: Entire neural network definition
+   └─ Functions:
+      - torch.nn: Define model layers (Module, Sequential, Linear, etc)
+      - torch.load(): Load checkpoint files
+      - torch.zeros(): Create zero tensors for padding
+      - torch.cat(): Concatenate tensors
+      - torch.no_grad(): Disable gradient computation for inference
+
+
+3. import torch.nn as nn
+   ├─ Purpose: Neural network layer definitions
+   └─ Classes used:
+      - nn.Module: Base class for all model components
+      - nn.Sequential: Stack layers in sequence
+      - nn.Conv2d: 2D convolutional layer (for image encoder)
+      - nn.BatchNorm2d: Batch normalization for 2D features
+      - nn.ReLU: Rectified Linear Unit activation
+      - nn.MaxPool2d: Max pooling (part of ResNet18)
+      - nn.AdaptiveAvgPool2d: Adaptive average pooling
+      - nn.Linear: Fully connected layer
+      - nn.ConvTranspose1d: Transposed convolution (for 1D decoder upsampling)
+      - nn.BatchNorm1d: Batch normalization for 1D features
+      - nn.Conv1d: 1D convolution (final output layer)
+
+
+4. import numpy as np
+   ├─ Purpose: Numerical computing and array operations
+   └─ Used in: Data handling and I/O
+      - np.nan_to_num(): Replace NaN values with 0
+      - np.isnan(): Detect NaN values (for masking)
+      - np.concatenate(): Join waveform segments
+      - Array indexing and slicing
+
+
+5. from PIL import Image
+   ├─ Purpose: Image loading and processing
+   └─ Used in: ECGPredictor class
+      - Image.open(path).convert("RGB"): Load and convert image to RGB
+      - Works with JPG, PNG, and other formats
+
+
+6. import torchvision.transforms as T
+   ├─ Purpose: Image preprocessing and augmentation
+   └─ Used in: Create transform pipeline
+      - T.Resize((128, 128)): Resize all images to 128×128
+      - T.ToTensor(): Convert PIL Image to PyTorch tensor (0-1 range)
+      - T.Normalize([0.5]*3, [0.5]*3): Normalize RGB channels
+         * Subtracts mean 0.5 from each channel
+         * Divides by std 0.5 (ImageNet-style normalization)
+
+
+7. import torchvision.models as models
+   ├─ Purpose: Pretrained model architectures
+   └─ Used in: ResNetPanelEncoder
+      - models.resnet18(pretrained=False): Load ResNet18 architecture
+      - Set pretrained=False → random initialization, not ImageNet weights
+
+
+8. import os
+   ├─ Purpose: Operating system operations
+   └─ Used in: ECGDataset class
+      - os.listdir(path): List files in directory
+      - os.path.join(): Construct file paths (cross-platform)
+
+
+================================================================================
+FILE: predict.py (Streamlit Web App)
+================================================================================
+
+1. import streamlit as st
+   ├─ Purpose: Web UI framework for data apps
+   └─ Key functions:
+      - st.set_page_config(): Configure page layout and title
+      - st.title(): Display main title
+      - st.write(): Display text/markdown
+      - st.file_uploader(): File upload widget
+      - st.success()/st.info()/st.error(): Status messages
+      - st.selectbox(): Dropdown selector widget
+      - st.pyplot(): Display matplotlib plots
+      - st.download_button(): File download button
+      - st.cache_resource: Cache expensive computations
+
+
+2. import numpy as np
+   ├─ Purpose: Array operations and math
+   └─ Used in: Data manipulation (same as app.py)
+
+
+3. import matplotlib.pyplot as plt
+   ├─ Purpose: Data visualization library
+   └─ Used in: Plotting waveforms
+      - plt.figure(figsize=(14,4)): Create figure with dimensions
+      - plt.plot(): Line plot for waveform
+      - plt.title(): Add title to plot
+      - plt.grid(): Display grid background
+      - st.pyplot(): Convert to Streamlit display
+
+
+4. import pandas as pd
+   ├─ Purpose: Data frame and CSV operations
+   └─ Used in: CSV export
+      - pd.DataFrame(wave.T): Create table from waveform data
+      - Columns: ["I", "II", "III", "aVR", "aVL", "aVF", "V1-V6"]
+      - Rows: Time samples
+      - df.to_csv(): Write to CSV file
+
+
+5. import tempfile
+   ├─ Purpose: Create temporary files
+   └─ Used in: Temporary storage of uploaded files
+      - tempfile.NamedTemporaryFile(): Create temp file with name
+      - temp_file.write(): Save uploaded bytes
+      - temp_file.close(): Finalize and get path
+      - File auto-deleted after use
+
+
+6. import os
+   ├─ Purpose: File operations (same as app.py)
+   └─ Used in: Path checking, file management
+
+
+7. from app import ECGPredictor
+   ├─ Purpose: Import model inference class
+   └─ Used in: Create predictor instance for inference
+      - Handles model loading and panel prediction
+
+
+================================================================================
+FILE: test_predict.py (CLI Testing)
+================================================================================
+
+1. import sys
+   ├─ Purpose: System parameters and functions
+   └─ Used in: Command-line argument handling
+      - sys.argv: Access command-line arguments
+      - sys.stdout.flush(): Force print output immediately
+      - sys.stderr: Error stream for error messages
+
+
+2. from app import ECGPredictor
+   ├─ Purpose: Import model class (same as predict.py)
+   └─ Used in: Batch testing of images
+
+
+3. import numpy as np
+   ├─ Purpose: Numerical computing (same as others)
+   └─ Used in: Statistics computation
+      - np.corrcoef(): Pearson correlation coefficient
+      - np.linalg.norm(): L2 distance calculation
+      - np.nanmean(): Mean ignoring NaN values
+
+
+4. import os
+   ├─ Purpose: File operations (same as others)
+   └─ Used in: Check if files exist, get basenames
+
+
+================================================================================
+FILE: generate_test_images.py (Synthetic Data)
+================================================================================
+
+1. import numpy as np
+   ├─ Purpose: Array operations for image generation
+   └─ Used in: Create pixel arrays with mathematical patterns
+      - np.ones(): Create arrays filled with 1s
+      - np.sin(): Sine wave calculations
+      - np.max(): Clipping values
+
+
+2. from PIL import Image, ImageDraw, ImageFont
+   ├─ Image: Image creation
+   ├─ ImageDraw: Draw shapes/text on images
+   └─ ImageFont: Text rendering (commented out in code)
+      - Image.fromarray(): Convert numpy array to PIL Image
+      - ImageDraw.Draw(): Create drawing context
+      - draw.line(): Draw lines
+      - draw.point(): Draw individual pixels
+      - draw.text(): Add text labels
+
+
+3. import os
+   ├─ Purpose: File operations (same as others)
+   └─ Used in: Create output directory
+      - os.makedirs(..., exist_ok=True): Create folder if needed
+
+
+================================================================================
+FILE: diagnose_checkpoint.py (Inspection Tool)
+================================================================================
+
+1. import torch
+   ├─ Purpose: PyTorch (same as app.py)
+   └─ Used in: Load checkpoint
+      - torch.load(): Read .pth file
+
+
+2. from app import ResNetUNetDigitizer
+   ├─ Purpose: Import model class
+   └─ Used in: Create fresh model for state_dict comparison
+
+
+================================================================================
+FILE: verify_loading.py (Verification Tool)
+================================================================================
+
+1. import torch
+   ├─ Purpose: PyTorch framework
+   └─ Used in: Tensor operations
+      - torch.randn(): Generate random tensors
+      - torch.no_grad(): Disable gradients
+
+
+2. from app import ECGPredictor, ResNetUNetDigitizer
+   ├─ Purpose: Import classes for testing
+   └─ Used in: Create model and predictor instances
+
+
+3. import numpy as np
+   ├─ Purpose: Numerical computing
+   └─ Used in: Statistics and comparisons
+
+
+================================================================================
+DEPENDENCY SUMMARY
+================================================================================
+
+Core ML/Deep Learning:
+├─ torch (PyTorch): Neural network definition and training
+├─ torchvision: ResNet18 architecture and image transforms
+└─ numpy: Numerical arrays and operations
+
+Data Handling:
+├─ pandas: CSV/dataframe operations
+├─ PIL (Pillow): Image I/O and processing
+└─ os: File system operations
+
+Web & Visualization:
+├─ streamlit: Web app framework
+├─ matplotlib: Plotting and visualization
+└─ tempfile: Temporary file management
+
+System:
+└─ sys: Command-line arguments and system operations
+
+Math:
+└─ math: Mathematical functions (ceil, etc)
+
+
+================================================================================
+WHY EACH IMPORT IS NEEDED
+================================================================================
+
+MUST-HAVES (Cannot run without):
+├─ torch: Core deep learning framework
+├─ torchvision: Model architectures
+├─ streamlit: Web UI
+├─ numpy: Array operations
+└─ PIL: Image loading
+
+IMPORTANT (Used in key functions):
+├─ os: File operations
+├─ pandas: CSV export
+├─ matplotlib: Plotting
+└─ tempfile: Temp file handling
+
+UTILITY (Used in testing/debugging):
+├─ sys: CLI args
+├─ math: Calculations
+└─ (others in diagnostic scripts)
+
+
+================================================================================
+IMPORT BEST PRACTICES USED IN PROJECT
+================================================================================
+
+1. Aliasing for convenience:
+   ✓ import torch.nn as nn
+   ✓ import torchvision.transforms as T
+   ✓ import torchvision.models as models
+   ✗ Avoid: import torch as t (confusing)
+
+2. Specific imports when possible:
+   ✓ from PIL import Image, ImageDraw
+   ✗ Avoid: import PIL (would need PIL.Image.open)
+
+3. Unused imports are avoided:
+   ✓ Only import what you use
+   ✗ Avoid bloating with unnecessary imports
+
+4. Standard library imports first:
+   ✓ import os, sys, math (standard library)
+   ✓ Then: import torch, numpy (third-party)
+   ✓ Finally: from app import ECGPredictor (local)
+
+
+================================================================================
+END OF IMPORTS BREAKDOWN
+================================================================================

@@ -1,0 +1,470 @@
+================================================================================
+ECG DIGITIZER PROJECT - INTERVIEW Q&A STUDY GUIDE
+================================================================================
+
+PROJECT OVERVIEW
+================================================================================
+The ECG Digitizer is a machine learning application that converts ECG panel 
+images (JPG/PNG) into digital waveform signals (12-lead ECG data). It uses a 
+ResNet-based encoder + UNet 1D decoder trained on the PhysioNet ECG image 
+digitization dataset.
+
+Key Stack: PyTorch, Streamlit, ResNet18, Conv1D Decoder, Python 3
+
+
+================================================================================
+1. ARCHITECTURE & MODEL DESIGN
+================================================================================
+
+Q: Explain the model architecture of the ECG Digitizer.
+A: The model (ResNetUNetDigitizer) has three main components:
+
+   1. ResNetPanelEncoder:
+      - Uses ResNet18 pretrained backbone (conv1, bn1, relu, maxpool, layer1-4)
+      - Input: (B, 12, 3, 128, 128) - batch of 12 ECG panels
+      - Processes each panel individually through ResNet18
+      - Output: 512-dimensional feature vector per panel
+      - Uses adaptive average pooling to compress spatial dimensions to 1x1
+      - Final projection layer: 512 → enc_dim (512)
+
+   2. Fusion Module (self.fuse):
+      - Takes per-panel features and averages them: (B, 12, 512) → (B, 512)
+      - Two linear layers with ReLU: 512 → 256 → 256
+      - Compresses information from all 12 panels into a single 256-d vector
+      - This fused representation captures global ECG characteristics
+
+   3. UNet1DDecoder:
+      - Input: 256-dimensional latent vector
+      - Linear projection: 256 → (128 * L0) where L0 = ceil(10250 / 2^5)
+      - Reshape to (B, 128, L0) for 1D deconvolution
+      - 5 transposed convolution blocks with batch norm and ReLU
+      - Each block upsamples by factor of 2 and reduces channels
+      - Final conv1d layer: outputs 12 channels (one per ECG lead)
+      - Output: (B, 12, 10250) - digitized 12-lead waveform
+
+
+Q: Why use ResNet18 for the encoder instead of a simpler CNN?
+A: - ResNet18 provides strong feature extraction with skip connections
+     - Pretrained weights could be used for transfer learning (though set to False here)
+     - Batch normalization stabilizes training
+     - Residual connections prevent gradient vanishing in deep networks
+     - 18 layers is a good balance between expressiveness and computation
+     - Proven to work well on image understanding tasks
+
+
+Q: What is the purpose of the fusion layer?
+A: The fusion layer:
+   - Combines information from 12 independent ECG panels
+   - Each panel may show a different lead or time window
+   - Averaging pools all panel features: (B, 12, 512) → (B, 512)
+   - Two FC layers with ReLU create a compressed 256-d representation
+   - This bottleneck forces the model to learn what's essential across panels
+   - Allows training to converge by reducing parameter count
+   - Creates a single latent code that the decoder must reconstruct from
+
+
+Q: Why use a 1D decoder (Conv1D + ConvTranspose1d) instead of just FC layers?
+A: - 1D convolutions preserve temporal structure of waveforms
+     - Convolutional decoders learn to generate smooth, correlated signals
+     - FC layers would require massive parameter count for 12 × 10250 = 123,000 outputs
+     - Conv1D with upsampling is parameter-efficient and more structured
+     - Batch normalization in decoder stabilizes generation
+     - Allows model to learn hierarchical temporal patterns
+
+
+Q: What are the input/output shapes at each stage?
+A: Input panels: (B, 12, 3, 128, 128)
+   ↓ ResNetPanelEncoder (per panel)
+   (B*12, 3, 128, 128) → ResNet18 → (B*12, 512)
+   ↓ Reshape
+   (B, 12, 512)
+   ↓ Fusion (average pooling + FC)
+   (B, 512) → (B, 256)
+   ↓ UNet1DDecoder
+   (B, 256) → (B, 128, L0) → [5×ConvTranspose1D blocks] → (B, 12, 10250)
+   Output: (B, 12, 10250) where 10250 is max waveform length
+
+
+================================================================================
+2. DATA & PREPROCESSING
+================================================================================
+
+Q: What preprocessing is applied to ECG images?
+A: 1. Resize: All images resized to 128×128 (from variable sizes)
+   2. ToTensor: Convert PIL Image to PyTorch tensor, normalize to [0, 1]
+   3. Normalize: Apply ImageNet normalization
+      - Mean: [0.5, 0.5, 0.5]
+      - Std: [0.5, 0.5, 0.5]
+      - Formula: (x - mean) / std
+   
+   These are applied via torchvision.transforms.Compose pipeline
+
+
+Q: How are waveforms preprocessed?
+A: 1. Load CSV with 12 leads (I, II, III, aVR, aVL, aVF, V1-V6)
+   2. Convert to numpy array and transpose: (T, 12) → (12, T)
+   3. Create validity mask: mask = ~isnan(array)
+   4. Replace NaN with 0 (only for calculation)
+   5. Pad/truncate to max_points = 10250
+   6. Return (waveform, mask) tensors
+
+
+Q: Why is a mask needed for waveforms?
+A: - Real ECG data often has missing/invalid points (NaN values)
+     - Mask indicates which points are valid: True = valid, False = invalid
+     - During loss calculation: only compute loss on valid points
+     - Loss = sum((pred - true)^2 * mask) / sum(mask)
+     - This prevents penalizing model for predicting invalid regions
+     - Handles variable-length recordings gracefully
+
+
+Q: What is max_points = 10250?
+A: - Maximum waveform length across entire training dataset
+     - Longest ECG recording in PhysioNet data is 10,250 time points
+     - All shorter recordings are padded to this length
+     - All longer recordings are truncated
+     - Ensures consistent tensor dimensions in batches
+
+
+Q: How many panels can be uploaded at once?
+A: Up to 12 panels (max_panels = 12)
+   - If fewer than 12 provided: padded with zero tensors (0, 3, 128, 128)
+   - If more than 12 provided: truncated to first 12
+   - If exactly 12: stacked as-is
+
+
+================================================================================
+3. TRAINING & LOSS
+================================================================================
+
+Q: What loss function is used?
+A: Masked Mean Squared Error (Masked MSE):
+   
+   loss = sum((pred - true)^2 * mask) / sum(mask)
+   
+   Where:
+   - pred: model predictions, shape (B, 12, T)
+   - true: ground truth waveforms, shape (B, 12, T)
+   - mask: validity mask, shape (B, 12, T), values 0 or 1
+   - Only calculates loss on valid (non-NaN) points
+   - Adds 1e-12 to denominator to avoid division by zero
+
+
+Q: What optimizer and learning rate are used?
+A: - Optimizer: AdamW (Adam with weight decay)
+     - Learning rate: 1e-4 (0.0001)
+     - Weight decay: 1e-5 (0.00001)
+     - This is a conservative LR for deep networks
+     - Weight decay prevents overfitting
+
+
+Q: What is the training setup?
+A: - Batch size: 1 (chosen for memory efficiency)
+     - Epochs: 10
+     - Mixed precision: enabled (torch.cuda.amp.autocast + GradScaler)
+     - This speeds up training and reduces memory usage
+     - Gradient scaling handles numerical stability in FP16
+
+
+Q: How is the best model saved?
+A: - Track best_loss across all epochs
+     - Whenever current loss < best_loss:
+       * Save model.state_dict() to "resnet_unet_best.pth"
+       * This is checkpoint saving, not full model serialization
+     - Allows recovery of best weights even if later epochs overfit
+
+
+================================================================================
+4. INFERENCE & DEPLOYMENT
+================================================================================
+
+Q: How does the ECGPredictor class work?
+A: The ECGPredictor wraps the model for easy inference:
+
+   1. __init__(model_path):
+      - Load checkpoint from file
+      - Handle mismatched keys gracefully (skip incompatible layers)
+      - Create transform pipeline (Resize 128x128, normalize)
+      - Set model to eval mode (disables dropout, uses running stats for BN)
+
+   2. load_panels(paths):
+      - Load each image from disk using PIL
+      - Apply transform (resize, tensor, normalize)
+      - Pad to 12 if fewer provided
+      - Stack into (1, 12, 3, 128, 128) tensor
+      - Return batch of panels
+
+   3. predict(panel_paths):
+      - Call load_panels()
+      - Forward pass: model(panels)
+      - Return output as numpy: (12, 10250)
+
+
+Q: Why is model.eval() called?
+A: - Disables training-specific behaviors:
+     - Dropout becomes identity (doesn't drop neurons)
+     - Batch norm uses running mean/var (not batch statistics)
+   - Ensures deterministic outputs
+   - Needed for inference
+
+
+Q: How is the checkpoint loaded robustly?
+A: 1. Load raw checkpoint file with torch.load()
+   2. Check if wrapped in {'state_dict': ...} dict
+   3. Get current model's state_dict()
+   4. For each checkpoint key:
+      - Remove 'module.' prefix if present (DataParallel artifact)
+      - Check if key exists in model
+      - Check if shapes match
+      - Only copy if both conditions true
+   5. Load with strict=False to allow partial loading
+   6. Print warnings for skipped keys
+   
+   This handles:
+   - Different architectures (mismatched keys)
+   - DataParallel saved checkpoints
+   - Shape mismatches from architecture changes
+
+
+Q: What does the Streamlit app do?
+A: 1. Load model once (cached with @st.cache_resource)
+   2. Display title and upload widget
+   3. Accept multiple PNG files
+   4. Save files temporarily
+   5. Call predictor.predict(temp_paths)
+   6. Display waveform plot (selectable by lead)
+   7. Offer CSV download
+   
+   Features:
+   - st.file_uploader for file selection
+   - st.selectbox for lead selection
+   - st.pyplot for visualization
+   - st.download_button for CSV export
+
+
+================================================================================
+5. COMMON ISSUES & FIXES
+================================================================================
+
+Q: What was the blank page issue on Streamlit?
+A: - predict.py had circular import: "from predict import ECGPredictor"
+     - Python was trying to import from the same module
+   - Solution: Changed to "from app import ECGPredictor"
+   - Now correctly imports the model class from app.py
+
+
+Q: What checkpoint loading error was encountered?
+A: - Model architecture in app.py was simplified (TinyEncoder + FC decoder)
+     - Checkpoint was saved from training with ResNet + UNet1D architecture
+     - Keys didn't match → RuntimeError on load_state_dict
+   - Solution: Replaced simplified model with exact training architecture
+   - Now all 165 keys match perfectly
+
+
+Q: Why did identical images produce identical outputs?
+A: - Both test images in input_ecg/ folder were the same file
+     - Model correctly outputs identical waveforms for identical inputs
+     - Not a bug; expected behavior
+   - Solution: Generated synthetic test images with visually different content
+   - Confirmed model loads and runs correctly
+
+
+Q: Why do very different images still produce similar outputs (corr=0.9987)?
+A: Likely causes:
+   1. Model was trained on limited ECG panel diversity
+   2. Mean pooling in fusion layer loses panel-specific information
+   3. Decoder learned to output "canonical" waveform
+   4. Training data wasn't diverse enough
+   
+   This is a model limitation, not an app bug.
+   App is working correctly; model needs retraining with better data.
+
+
+================================================================================
+6. PROJECT STRUCTURE & FILES
+================================================================================
+
+Q: What are the main files in the project?
+A: - app.py: Model classes (ResNetPanelEncoder, UNet1DDecoder, ResNetUNetDigitizer, ECGPredictor)
+     - predict.py: Streamlit UI app
+     - requirements.txt: Dependencies (torch, torchvision, streamlit, etc)
+     - resnet_unet_best.pth: Saved model checkpoint
+     - test_predict.py: CLI test script for batch predictions
+     - generate_test_images.py: Synthetic image generator for testing
+     - diagnose_checkpoint.py: Inspection tool for checkpoint keys/shapes
+     - verify_loading.py: Verification that weights load correctly
+
+
+Q: What are the key dependencies?
+A: - torch: PyTorch deep learning framework
+     - torchvision: Vision utilities (ResNet, transforms, models)
+     - streamlit: Web UI framework
+     - PIL (Pillow): Image loading/processing
+     - numpy: Numerical computing
+     - pandas: CSV/data handling
+     - matplotlib: Plotting
+
+
+Q: How do you run the app?
+A: 1. Activate virtual environment: venv\Scripts\activate
+   2. Install dependencies: pip install -r requirements.txt
+   3. Run Streamlit: python -m streamlit run predict.py
+   4. Open browser to http://localhost:8501
+   5. Upload ECG panel images
+   6. View and download digitized waveforms
+
+
+================================================================================
+7. TECHNICAL CONCEPTS
+================================================================================
+
+Q: Explain batch normalization and why it matters.
+A: Batch Normalization:
+   - Normalizes inputs to each layer: (x - batch_mean) / batch_std
+   - Learned scale/shift parameters: γ, β
+   - Benefits:
+     * Faster training (can use higher learning rates)
+     * Reduces internal covariate shift
+     * Acts as regularizer (reduces overfitting)
+     * More stable gradients
+   - During training: uses batch statistics
+     * Computed from current batch
+   - During inference (eval mode): uses running statistics
+     * Exponential moving average of batch means/vars from training
+     * Ensures consistency with training distribution
+
+
+Q: What is adaptive average pooling and why use it?
+A: Adaptive Average Pooling:
+   - Automatically computes stride to produce fixed output size
+   - nn.AdaptiveAvgPool2d((1, 1)) → outputs shape (B, C, 1, 1)
+   - Then flatten to (B, C)
+   - Advantages:
+     * Works with any input spatial dimensions
+     * Eliminates spatial information, keeps channel info
+     * Parameter-free operation
+   - In this project: pools ResNet18 output (any spatial size) to 512-d vector
+
+
+Q: What is transfer learning? Is it used here?
+A: Transfer Learning:
+   - Pretrain model on large dataset (ImageNet), fine-tune on target task
+   - Benefits:
+     * Faster convergence (fewer epochs needed)
+     * Works with limited target data
+     * Better generalization
+   
+   In this project:
+   - ResNet18 is NOT pretrained (pretrained=False in code)
+   - Model trained from scratch on ECG panels
+   - Could benefit from transfer learning if implemented
+
+
+Q: What is the difference between model.train() and model.eval()?
+A:                  train() mode        eval() mode
+   Dropout         active (random)      disabled
+   BatchNorm       uses batch stats     uses running stats
+   Gradients       computed            not computed
+   Use case        training            inference/validation
+   
+   In this project:
+   - model.train() during training loop
+   - model.eval() in ECGPredictor for inference
+
+
+Q: What is mixed precision training?
+A: - Uses lower precision (FP16) for faster computation, FP32 for stability
+     - torch.cuda.amp.autocast(): automatic precision selection
+     - torch.cuda.amp.GradScaler(): scales gradients to prevent underflow
+     - Benefits:
+       * 2-3x speedup on modern GPUs
+       * ~50% memory savings
+       * Maintains numerical stability
+   - Used in training loop for efficiency
+
+
+================================================================================
+8. PERFORMANCE & METRICS
+================================================================================
+
+Q: How do you evaluate model performance?
+A: Methods:
+   1. Loss tracking: monitor masked MSE during training
+   2. Visual inspection: plot predicted vs true waveforms
+   3. Lead-wise statistics: mean, std, min, max per lead
+   4. Pairwise correlation: compare predictions for different images
+   5. L2 distance: measure magnitude of differences
+   
+   In this project:
+   - Test with different ECG images
+   - Calculate per-lead means → should differ between images
+   - Compute correlation between predictions → should be < 1.0
+   - Track L2 distance → non-zero indicates different outputs
+
+
+Q: What correlation did you observe in testing?
+A: - First test (identical images): corr = 1.0000 (expected)
+     - Second test (synthetic RED vs BLUE): corr = 0.9987
+     - This suggests model is largely invariant to input content
+     - Likely due to training data similarity or architecture design
+
+
+================================================================================
+9. POTENTIAL IMPROVEMENTS
+================================================================================
+
+Q: How could you improve model responsiveness to different ECG panels?
+A: 1. Increase training data diversity
+      - Use panels from different hospitals, patients, conditions
+      - Augment with rotations, noise, scaling
+   
+   2. Replace mean pooling with attention
+      - Learn which panels are most important
+      - Preserve panel-specific information
+   
+   3. Improve decoder architecture
+      - Add skip connections from encoder to decoder
+      - Use larger hidden dimensions
+      - Add residual blocks in decoder
+   
+   4. Different fusion strategy
+      - Concatenate all panel features instead of averaging
+      - Use gating mechanism to weight panels
+   
+   5. Add regularization
+      - L1/L2 penalties on weights
+      - Dropout in decoder
+      - Data augmentation
+
+
+Q: How could you optimize for faster inference?
+A: 1. Model quantization: FP32 → INT8 for 4x speedup
+   2. ONNX export: convert to ONNX format for optimized inference
+   3. Batch processing: predict multiple sets of panels simultaneously
+   4. Pruning: remove unimportant connections
+   5. Caching: store common predictions to avoid recomputation
+   6. GPU deployment: use CUDA for faster computation
+
+
+================================================================================
+10. INTERVIEW TIPS
+================================================================================
+
+Be prepared to discuss:
+- Why you chose this architecture (resnet + unet)
+- How you debugged the checkpoint loading issue
+- Why synthetic images were needed for testing
+- How the model would perform on real clinical data
+- Trade-offs between model complexity and inference speed
+- How you would improve model robustness
+
+Highlight:
+- Problem-solving approach (diagnosis scripts)
+- Understanding of PyTorch mechanics (state_dict, eval mode, etc)
+- Full-stack knowledge (model training + web deployment)
+- Testing methodology (test_predict.py, synthetic images, metrics)
+
+
+================================================================================
+END OF STUDY GUIDE
+================================================================================
