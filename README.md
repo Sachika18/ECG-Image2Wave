@@ -63,15 +63,4 @@ Usage tips for GitHub description
 - Use the suggested one-line description above as the repository "description".
 - Pin a short README excerpt as the repo README summary (the first paragraph).
 
-License
-- Add a license file (e.g., MIT) if you plan to open-source the code.
 
-Contact
-- Add your name/email or a link to your GitHub profile here.
-
----
-
-If you want, I can also:
-- Add a `LICENSE` (MIT) and `.gitignore` tailored to Python projects
-- Commit these files and provide the exact `git` commands for Windows
-- Create a short GitHub Actions workflow to run a basic lint/test on push
